@@ -1,0 +1,137 @@
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from rest_framework import status
+from datetime import datetime, timedelta
+from django.shortcuts import get_object_or_404
+from .models import Customer, Loan
+from .serializers import *
+from .utils import calculate_credit_score, calculate_monthly_emi, get_corrected_interest_rate
+
+@api_view(['POST'])
+def register_customer(request):
+    try:
+        data = request.data
+        monthly_income = data.get('monthly_income')
+        approved_limit = round((36 * monthly_income) / 100000) * 100000
+        customer = Customer.objects.create(
+            first_name=data.get('first_name'),
+            last_name=data.get('last_name'),
+            age=data.get('age'),
+            phone_number=data.get('phone_number'),
+            monthly_salary=monthly_income,
+            approved_limit=approved_limit,
+            current_debt=0
+        )
+        return Response({
+            'customer_id': customer.customer_id,
+            'name': f"{customer.first_name} {customer.last_name}",
+            'age': customer.age,
+            'monthly_income': customer.monthly_salary,
+            'approved_limit': customer.approved_limit,
+            'phone_number': customer.phone_number
+        }, status=status.HTTP_201_CREATED)
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+@api_view(['POST'])
+def check_eligibility(request):
+    try:
+        customer_id = request.data['customer_id']
+        loan_amount = request.data['loan_amount']
+        interest_rate = request.data['interest_rate']
+        tenure = request.data['tenure']
+        customer = get_object_or_404(Customer, customer_id=customer_id)
+        credit_score = calculate_credit_score(customer)
+        current_loans = Loan.objects.filter(customer=customer, end_date__gte=datetime.now().date())
+        current_emi_sum = sum(loan.monthly_repayment for loan in current_loans)
+        approval = False
+        corrected_interest_rate = interest_rate
+        if current_emi_sum > 0.5 * customer.monthly_salary:
+            approval = False
+        elif credit_score > 50:
+            approval = True
+        elif credit_score > 30:
+            corrected_interest_rate = get_corrected_interest_rate(credit_score, interest_rate)
+            approval = interest_rate >= 12.0
+        elif credit_score > 10:
+            corrected_interest_rate = get_corrected_interest_rate(credit_score, interest_rate)
+            approval = interest_rate >= 16.0
+        monthly_installment = calculate_monthly_emi(loan_amount, corrected_interest_rate, tenure)
+        return Response({
+            'customer_id': customer_id,
+            'approval': approval,
+            'interest_rate': interest_rate,
+            'corrected_interest_rate': corrected_interest_rate,
+            'tenure': tenure,
+            'monthly_installment': monthly_installment
+        })
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+@api_view(['POST'])
+def create_loan(request):
+    try:
+        customer_id = request.data['customer_id']
+        loan_amount = request.data['loan_amount']
+        interest_rate = request.data['interest_rate']
+        tenure = request.data['tenure']
+        customer = get_object_or_404(Customer, customer_id=customer_id)
+        credit_score = calculate_credit_score(customer)
+        current_loans = Loan.objects.filter(customer=customer, end_date__gte=datetime.now().date())
+        current_emi_sum = sum(loan.monthly_repayment for loan in current_loans)
+        approval = False
+        message = "Loan not approved"
+        if current_emi_sum > 0.5 * customer.monthly_salary:
+            message = "Current EMIs exceed 50% of monthly salary"
+        elif credit_score > 50:
+            approval = True
+            message = "Loan approved"
+        elif credit_score > 30 and interest_rate >= 12.0:
+            approval = True
+            message = "Loan approved"
+        elif credit_score > 10 and interest_rate >= 16.0:
+            approval = True
+            message = "Loan approved"
+        monthly_installment = calculate_monthly_emi(loan_amount, interest_rate, tenure)
+        if approval:
+            start_date = datetime.now().date()
+            end_date = start_date + timedelta(days=tenure * 30)
+            loan = Loan.objects.create(
+                customer=customer,
+                loan_amount=loan_amount,
+                tenure=tenure,
+                interest_rate=interest_rate,
+                monthly_repayment=monthly_installment,
+                emis_paid_on_time=0,
+                start_date=start_date,
+                end_date=end_date
+            )
+            return Response({
+                'loan_id': loan.loan_id,
+                'customer_id': customer_id,
+                'loan_approved': True,
+                'message': message,
+                'monthly_installment': monthly_installment
+            }, status=status.HTTP_201_CREATED)
+        return Response({
+            'loan_id': None,
+            'customer_id': customer_id,
+            'loan_approved': False,
+            'message': message,
+            'monthly_installment': monthly_installment
+        })
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+@api_view(['GET'])
+def view_loan(request, loan_id):
+    loan = get_object_or_404(Loan, loan_id=loan_id)
+    serializer = LoanSerializer(loan)
+    return Response(serializer.data)
+
+@api_view(['GET'])
+def view_loans_by_customer(request, customer_id):
+    customer = get_object_or_404(Customer, customer_id=customer_id)
+    loans = Loan.objects.filter(customer=customer)
+    serializer = CustomerLoanSerializer(loans, many=True)
+    return Response(serializer.data)

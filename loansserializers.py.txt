@@ -1,0 +1,28 @@
+from rest_framework import serializers
+from .models import Customer, Loan
+
+class LoanSerializer(serializers.ModelSerializer):
+    customer = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Loan
+        fields = ['loan_id', 'customer', 'loan_amount', 'interest_rate', 'monthly_repayment', 'tenure']
+    
+    def get_customer(self, obj):
+        return {
+            'id': obj.customer.customer_id,
+            'first_name': obj.customer.first_name,
+            'last_name': obj.customer.last_name,
+            'phone_number': obj.customer.phone_number,
+            'age': obj.customer.age
+        }
+
+class CustomerLoanSerializer(serializers.ModelSerializer):
+    repayments_left = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Loan
+        fields = ['loan_id', 'loan_amount', 'interest_rate', 'monthly_repayment', 'repayments_left']
+    
+    def get_repayments_left(self, obj):
+        return obj.tenure - obj.emis_paid_on_time
